@@ -101,14 +101,51 @@ function isSymlink(entry) {
   return (unixMode & 0o170000) === 0o120000;
 }
 
-function chooseStripPrefix(entries) {
-  const files = entries.filter((entry) => !entry.isDirectory).map((entry) => normalizeZipPath(entry.entryName));
-  if (files.includes('index.html')) return '';
-  if (!files.length) return '';
-  const topLevels = new Set(files.map((file) => file.split('/')[0]));
-  if (topLevels.size !== 1) return '';
-  const [prefix] = [...topLevels];
-  return files.includes(`${prefix}/index.html`) ? `${prefix}/` : '';
+function chooseSiteRoot(entries) {
+  const files = entries
+    .filter((entry) => !entry.isDirectory)
+    .map((entry) => normalizeZipPath(entry.entryName));
+
+  const candidates = files.filter((file) => {
+    const lower = file.toLowerCase();
+    if (!/(^|\/)index\.html?$/.test(lower)) return false;
+    const segments = lower.split('/');
+    return !segments.some((segment) => ['node_modules', '.git', '__macosx'].includes(segment));
+  });
+
+  if (!candidates.length) {
+    throw new Error('No index.html was found anywhere in the ZIP. Upload a static website that contains an index.html file.');
+  }
+
+  const preferredRoots = ['dist', 'build', 'out', '_site', 'public', 'www', 'site', 'web', 'docs'];
+  const rank = (candidate) => {
+    const segments = candidate.split('/');
+    const directorySegments = segments.slice(0, -1);
+    const finalDirectory = (directorySegments.at(-1) || '').toLowerCase();
+    const preferredIndex = preferredRoots.indexOf(finalDirectory);
+    const isRoot = directorySegments.length === 0;
+
+    return [
+      isRoot ? 0 : 1,
+      preferredIndex === -1 ? preferredRoots.length : preferredIndex,
+      directorySegments.length,
+      candidate.length
+    ];
+  };
+
+  candidates.sort((a, b) => {
+    const aRank = rank(a);
+    const bRank = rank(b);
+    for (let i = 0; i < aRank.length; i += 1) {
+      if (aRank[i] !== bRank[i]) return aRank[i] - bRank[i];
+    }
+    return a.localeCompare(b);
+  });
+
+  const indexPath = candidates[0];
+  const slash = indexPath.lastIndexOf('/');
+  const prefix = slash === -1 ? '' : indexPath.slice(0, slash + 1);
+  return { prefix, indexPath };
 }
 
 async function extractZip(buffer, siteDir) {
@@ -137,15 +174,27 @@ async function extractZip(buffer, siteDir) {
     normalizeZipPath(entry.entryName);
   }
 
-  const stripPrefix = chooseStripPrefix(entries);
+  const { prefix: siteRootPrefix, indexPath } = chooseSiteRoot(entries);
   await fsp.rm(siteDir, { recursive: true, force: true });
   await fsp.mkdir(siteDir, { recursive: true });
 
   let fileCount = 0;
+  let extractedBytes = 0;
   for (const entry of entries) {
     let relative = normalizeZipPath(entry.entryName);
-    if (stripPrefix && relative.startsWith(stripPrefix)) relative = relative.slice(stripPrefix.length);
+
+    // Like Netlify Drop, automatically publish the folder that actually contains index.html.
+    // Files outside that detected website root are ignored (for example source files next to dist/).
+    if (siteRootPrefix) {
+      if (!relative.startsWith(siteRootPrefix)) continue;
+      relative = relative.slice(siteRootPrefix.length);
+    }
     if (!relative) continue;
+
+    // Normalize Index.html or index.htm so the root URL always resolves consistently.
+    if (normalizeZipPath(entry.entryName) === indexPath && relative.toLowerCase() !== 'index.html') {
+      relative = 'index.html';
+    }
 
     const target = path.resolve(siteDir, relative);
     if (target !== siteDir && !target.startsWith(`${siteDir}${path.sep}`)) {
@@ -157,20 +206,26 @@ async function extractZip(buffer, siteDir) {
       continue;
     }
 
+    const data = entry.getData();
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, entry.getData());
+    await fsp.writeFile(target, data);
     fileCount += 1;
+    extractedBytes += data.length;
   }
 
-  const indexPath = path.join(siteDir, 'index.html');
+  const deployedIndexPath = path.join(siteDir, 'index.html');
   try {
-    await fsp.access(indexPath);
+    await fsp.access(deployedIndexPath);
   } catch {
     await fsp.rm(siteDir, { recursive: true, force: true });
-    throw new Error('No index.html was found at the website root. Put index.html at the top level of the ZIP.');
+    throw new Error('SiteDock found an index file but could not prepare it as the website root.');
   }
 
-  return { fileCount, unpackedBytes };
+  return {
+    fileCount,
+    unpackedBytes: extractedBytes,
+    detectedRoot: siteRootPrefix ? siteRootPrefix.replace(/\/$/, '') : 'ZIP root'
+  };
 }
 
 async function walkFiles(root, current = root, output = []) {
@@ -252,6 +307,7 @@ async function createOrReplaceDeployment(req, res, existingId = null) {
       status: 'live',
       fileCount: result.fileCount,
       sizeBytes: result.unpackedBytes,
+      detectedRoot: result.detectedRoot,
       createdAt: existing?.createdAt || now,
       updatedAt: now
     };

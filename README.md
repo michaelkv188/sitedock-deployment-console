@@ -91,3 +91,9 @@ SiteDock is intended for websites you trust. The inspector preview uses an ifram
 - Text-file inspection: 2 MB per file
 
 Change the constants near the top of `server.js` to adjust these limits.
+
+## Version 1.1 improvements
+
+- Automatically detects `index.html` inside nested folders and common build output folders such as `dist`, `build`, `out`, and `public`.
+- Ignores source files outside the detected deploy root when a build folder is present.
+- Includes SiteDock browser-tab and home-screen icons.
