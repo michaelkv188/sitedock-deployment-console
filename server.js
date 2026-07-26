@@ -26,6 +26,7 @@ const upload = multer({
 });
 
 app.disable('x-powered-by');
+app.enable('strict routing');
 app.set('trust proxy', 1);
 app.use(helmet({
   contentSecurityPolicy: false,
@@ -444,7 +445,11 @@ async function serveDeployment(req, res, next) {
   }
 }
 
-app.get('/sites/:id', (req, res) => res.redirect(302, `/sites/${req.params.id}/`));
+// Serve the deployment directly with or without a trailing slash.
+// Avoid redirects here because some reverse proxies normalize trailing slashes,
+// which can otherwise create an infinite redirect loop.
+app.get('/sites/:id', serveDeployment);
+app.get('/sites/:id/', serveDeployment);
 app.get('/sites/:id/*', serveDeployment);
 
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
