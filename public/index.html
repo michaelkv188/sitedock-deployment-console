@@ -71,7 +71,19 @@
 
         <div class="section-heading">
           <div><h2>Your sites</h2><p>Inspect, preview, replace, or open any deployment.</p></div>
-          <label class="search-box"><span>⌕</span><input id="searchInput" type="search" placeholder="Search deployments"></label>
+          <div class="site-tools">
+            <label class="search-box"><span>⌕</span><input id="searchInput" type="search" placeholder="Search deployments"></label>
+            <button id="manageSitesButton" class="button secondary compact" type="button">Manage sites</button>
+          </div>
+        </div>
+
+        <div id="bulkActions" class="bulk-actions hidden" aria-live="polite">
+          <div><strong id="selectedCount">0 selected</strong><span>Select sites, then delete them together.</span></div>
+          <div class="bulk-action-buttons">
+            <button id="selectAllButton" class="button secondary compact" type="button">Select all</button>
+            <button id="cancelManageButton" class="button secondary compact" type="button">Cancel</button>
+            <button id="deleteSelectedButton" class="button danger compact" type="button" disabled>Delete selected</button>
+          </div>
         </div>
 
         <div id="sitesGrid" class="sites-grid"></div>

@@ -5,7 +5,9 @@ const state = {
   deployments: [],
   activeDeployment: null,
   activeFileContent: '',
-  selectedUpload: null
+  selectedUpload: null,
+  manageMode: false,
+  selectedDeploymentIds: new Set()
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -26,6 +28,12 @@ const elements = {
   totalFiles: $('#totalFiles'),
   storageUsed: $('#storageUsed'),
   searchInput: $('#searchInput'),
+  manageSitesButton: $('#manageSitesButton'),
+  bulkActions: $('#bulkActions'),
+  selectedCount: $('#selectedCount'),
+  selectAllButton: $('#selectAllButton'),
+  cancelManageButton: $('#cancelManageButton'),
+  deleteSelectedButton: $('#deleteSelectedButton'),
   uploadForm: $('#uploadForm'),
   zipInput: $('#zipInput'),
   siteName: $('#siteName'),
@@ -141,35 +149,100 @@ async function loadDeployments() {
   renderDeployments();
 }
 
-function renderDeployments() {
+function filteredDeployments() {
   const query = elements.searchInput.value.trim().toLowerCase();
-  const filtered = state.deployments.filter((item) => item.name.toLowerCase().includes(query) || item.id.includes(query));
+  return state.deployments.filter((item) => item.name.toLowerCase().includes(query) || item.id.includes(query));
+}
+
+function updateBulkActions(filtered = filteredDeployments()) {
+  const selectedCount = state.selectedDeploymentIds.size;
+  elements.bulkActions.classList.toggle('hidden', !state.manageMode);
+  elements.manageSitesButton.classList.toggle('active', state.manageMode);
+  elements.manageSitesButton.textContent = state.manageMode ? 'Done' : 'Manage sites';
+  elements.selectedCount.textContent = `${selectedCount.toLocaleString()} selected`;
+  elements.deleteSelectedButton.disabled = selectedCount === 0;
+
+  const visibleIds = filtered.map((site) => site.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => state.selectedDeploymentIds.has(id));
+  elements.selectAllButton.textContent = allVisibleSelected ? 'Clear visible' : 'Select all';
+}
+
+function renderDeployments() {
+  const filtered = filteredDeployments();
   elements.totalSites.textContent = state.deployments.length.toLocaleString();
   elements.totalFiles.textContent = state.deployments.reduce((sum, item) => sum + (item.fileCount || 0), 0).toLocaleString();
   elements.storageUsed.textContent = formatBytes(state.deployments.reduce((sum, item) => sum + (item.sizeBytes || 0), 0));
   elements.emptyState.classList.toggle('hidden', state.deployments.length !== 0);
 
-  elements.sitesGrid.innerHTML = filtered.map((site) => `
-    <article class="site-card" data-site-id="${escapeHtml(site.id)}" tabindex="0" role="button" aria-label="Inspect ${escapeHtml(site.name)}">
-      <div class="site-thumb">
-        <span class="live-pill">LIVE</span>
-        <iframe src="${escapeHtml(site.url)}" sandbox="" loading="lazy" title="${escapeHtml(site.name)} thumbnail"></iframe>
-      </div>
-      <div class="site-body">
-        <div class="site-title-row"><h3>${escapeHtml(site.name)}</h3><button class="site-menu" aria-label="Open deployment">•••</button></div>
-        <p class="site-url">${escapeHtml(site.url.replace(/^https?:\/\//, ''))}</p>
-        <div class="site-meta"><span>${site.fileCount.toLocaleString()} files · ${formatBytes(site.sizeBytes)}</span><span>Updated ${formatDate(site.updatedAt)}</span></div>
-      </div>
-    </article>
-  `).join('');
+  elements.sitesGrid.innerHTML = filtered.map((site) => {
+    const selected = state.selectedDeploymentIds.has(site.id);
+    return `
+      <article class="site-card ${state.manageMode ? 'manage-mode' : ''} ${selected ? 'selected' : ''}" data-site-id="${escapeHtml(site.id)}" tabindex="0" role="button" aria-label="${state.manageMode ? 'Select' : 'Inspect'} ${escapeHtml(site.name)}" aria-pressed="${state.manageMode ? String(selected) : 'false'}">
+        <div class="site-thumb">
+          <span class="live-pill">LIVE</span>
+          <button class="site-select ${state.manageMode ? '' : 'hidden'}" type="button" data-action="select" aria-label="${selected ? 'Deselect' : 'Select'} ${escapeHtml(site.name)}"><span>✓</span></button>
+          <iframe src="${escapeHtml(site.url)}" sandbox="" loading="lazy" title="${escapeHtml(site.name)} thumbnail"></iframe>
+        </div>
+        <div class="site-body">
+          <div class="site-title-row">
+            <h3>${escapeHtml(site.name)}</h3>
+            <button class="site-delete" type="button" data-action="delete" aria-label="Delete ${escapeHtml(site.name)}" title="Delete deployment">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/></svg>
+            </button>
+          </div>
+          <p class="site-url">${escapeHtml(site.url.replace(/^https?:\/\//, ''))}</p>
+          <div class="site-meta"><span>${site.fileCount.toLocaleString()} files · ${formatBytes(site.sizeBytes)}</span><span>Updated ${formatDate(site.updatedAt)}</span></div>
+        </div>
+      </article>
+    `;
+  }).join('');
 
-  $$('.site-card', elements.sitesGrid).forEach((card) => {
-    const open = () => openInspector(card.dataset.siteId);
-    card.addEventListener('click', open);
-    card.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') open();
-    });
-  });
+  updateBulkActions(filtered);
+}
+
+function toggleDeploymentSelection(id) {
+  if (state.selectedDeploymentIds.has(id)) state.selectedDeploymentIds.delete(id);
+  else state.selectedDeploymentIds.add(id);
+  renderDeployments();
+}
+
+function setManageMode(enabled) {
+  state.manageMode = enabled;
+  if (!enabled) state.selectedDeploymentIds.clear();
+  renderDeployments();
+}
+
+async function deleteDeploymentById(id, { confirmFirst = true, refresh = true } = {}) {
+  const site = state.deployments.find((item) => item.id === id);
+  if (!site) return false;
+  if (confirmFirst) {
+    const confirmed = window.confirm(`Delete “${site.name}”? This permanently removes the site and its live URL.`);
+    if (!confirmed) return false;
+  }
+  await api(`/api/deployments/${id}`, { method: 'DELETE' });
+  state.selectedDeploymentIds.delete(id);
+  if (state.activeDeployment?.id === id) closeInspector();
+  if (refresh) await loadDeployments();
+  return true;
+}
+
+async function deleteSelectedDeployments() {
+  const ids = [...state.selectedDeploymentIds];
+  if (!ids.length) return;
+  const confirmed = window.confirm(`Delete ${ids.length} selected deployment${ids.length === 1 ? '' : 's'}? Their live URLs and stored files will be permanently removed.`);
+  if (!confirmed) return;
+
+  elements.deleteSelectedButton.disabled = true;
+  elements.deleteSelectedButton.textContent = 'Deleting…';
+  const results = await Promise.allSettled(ids.map((id) => deleteDeploymentById(id, { confirmFirst: false, refresh: false })));
+  const deleted = results.filter((result) => result.status === 'fulfilled' && result.value).length;
+  const failed = results.length - deleted;
+
+  state.selectedDeploymentIds.clear();
+  await loadDeployments();
+  if (failed) showToast(`${deleted} deleted; ${failed} could not be deleted.`, 'error');
+  else showToast(`${deleted} deployment${deleted === 1 ? '' : 's'} deleted.`);
+  elements.deleteSelectedButton.textContent = 'Delete selected';
 }
 
 function selectUpload(file) {
@@ -398,13 +471,9 @@ async function renameDeployment() {
 
 async function deleteDeployment() {
   if (!state.activeDeployment) return;
-  const confirmed = window.confirm(`Delete “${state.activeDeployment.name}”? This permanently removes the site and its live URL.`);
-  if (!confirmed) return;
   try {
-    await api(`/api/deployments/${state.activeDeployment.id}`, { method: 'DELETE' });
-    closeInspector();
-    await loadDeployments();
-    showToast('Deployment deleted.');
+    const deleted = await deleteDeploymentById(state.activeDeployment.id);
+    if (deleted) showToast('Deployment deleted.');
   } catch (error) {
     showToast(error.message, 'error');
   }
@@ -429,6 +498,52 @@ function setupEvents() {
   $('#refreshButton').addEventListener('click', () => loadDeployments().then(() => showToast('Deployments refreshed.')).catch((error) => showToast(error.message, 'error')));
   $$('[data-open-uploader]').forEach((button) => button.addEventListener('click', () => switchView('new')));
   elements.searchInput.addEventListener('input', renderDeployments);
+  elements.manageSitesButton.addEventListener('click', () => setManageMode(!state.manageMode));
+  elements.cancelManageButton.addEventListener('click', () => setManageMode(false));
+  elements.selectAllButton.addEventListener('click', () => {
+    const visible = filteredDeployments();
+    const allVisibleSelected = visible.length > 0 && visible.every((site) => state.selectedDeploymentIds.has(site.id));
+    visible.forEach((site) => {
+      if (allVisibleSelected) state.selectedDeploymentIds.delete(site.id);
+      else state.selectedDeploymentIds.add(site.id);
+    });
+    renderDeployments();
+  });
+  elements.deleteSelectedButton.addEventListener('click', () => deleteSelectedDeployments().catch((error) => {
+    elements.deleteSelectedButton.textContent = 'Delete selected';
+    showToast(error.message, 'error');
+  }));
+  elements.sitesGrid.addEventListener('click', (event) => {
+    const card = event.target.closest('.site-card');
+    if (!card) return;
+    const actionButton = event.target.closest('[data-action]');
+    const id = card.dataset.siteId;
+
+    if (actionButton?.dataset.action === 'delete') {
+      event.stopPropagation();
+      deleteDeploymentById(id).then((deleted) => {
+        if (deleted) showToast('Deployment deleted.');
+      }).catch((error) => showToast(error.message, 'error'));
+      return;
+    }
+
+    if (state.manageMode || actionButton?.dataset.action === 'select') {
+      event.stopPropagation();
+      toggleDeploymentSelection(id);
+      return;
+    }
+
+    openInspector(id);
+  });
+  elements.sitesGrid.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.target.closest('button')) return;
+    const card = event.target.closest('.site-card');
+    if (!card) return;
+    event.preventDefault();
+    if (state.manageMode) toggleDeploymentSelection(card.dataset.siteId);
+    else openInspector(card.dataset.siteId);
+  });
 
   elements.zipInput.addEventListener('change', () => selectUpload(elements.zipInput.files[0]));
   elements.clearFileButton.addEventListener('click', () => selectUpload(null));
